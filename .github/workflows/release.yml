@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install -g semantic-release@23
+          npm install -g @semantic-release/git@10
+          npm install -g @semantic-release/github@10
+          npm install -g @semantic-release/commit-analyzer@12
+          npm install -g @semantic-release/release-notes-generator@13
+          npm install -g @semantic-release/changelog@6
+
+      - name: Verify installation
+        run: npx semantic-release --version
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+        run: npx semantic-release --debug
