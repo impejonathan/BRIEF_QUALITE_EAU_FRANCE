@@ -1,3 +1,10 @@
+# [1.0.0-beta.4](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2025-10-29)
+
+
+### Bug Fixes
+
+* amélioration configuration workflow semantic release 2 ([64e1bfb](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/64e1bfb74b74d29f484ed44a18ea2065da706f6a))
+
 # [1.0.0-beta.3](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2025-10-29)
 
 
