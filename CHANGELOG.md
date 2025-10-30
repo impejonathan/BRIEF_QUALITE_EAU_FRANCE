@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0...v1.1.0) (2025-10-30)
+
+
+### Features
+
+*  depot_silver_azuredatabricks notebook ([56ef2a6](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/56ef2a6c8a8a637e4231635e06f0d12fbe1a0c5c))
+
 # [1.1.0-beta.1](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0...v1.1.0-beta.1) (2025-10-30)
 
 
