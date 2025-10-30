@@ -1,3 +1,10 @@
+# [1.1.0-beta.1](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0...v1.1.0-beta.1) (2025-10-30)
+
+
+### Features
+
+*  depot_silver_azuredatabricks notebook ([56ef2a6](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/56ef2a6c8a8a637e4231635e06f0d12fbe1a0c5c))
+
 # 1.0.0 (2025-10-29)
 
 
@@ -9,8 +16,7 @@
 
 ### Features
 
-* 1er push ([5571037](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/557103738d1fff787fafdb56dd1c855ea59e42b1))
-* ajout ingestion données qualité eau ([58bb0f1](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/58bb0f19a21a40ad79ca2036e0d042b45c092db4))
+*  depot_silver_azuredatabricks notebook ([56ef2a6](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/commit/56ef2a6c8a8a637e4231635e06f0d12fbe1a0c5c))
 
 # [1.0.0-beta.4](https://github.com/impejonathan/BRIEF_QUALITE_EAU_FRANCE/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2025-10-29)
 
