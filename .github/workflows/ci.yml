@@ -42,7 +42,7 @@ jobs:
           echo "📓 Installation de papermill"
           pip install papermill nbformat nbconvert jupyter
 
-          pip install python-dotenv
+          pip install python-dotenv jq
 
           echo "✅ Toutes les dépendances sont installées"
           pip list | grep azure
@@ -95,29 +95,6 @@ jobs:
 
           echo "✅ Ingestion terminée avec succès"
 
-      - name: 📊 Vérification des résultats
-        if: success()
-        run: |
-          echo "================================"
-          echo "📊 VÉRIFICATION DES RÉSULTATS"
-          echo "================================"
-
-          if [ -f "00_qualite_eau_ingestion_output.ipynb" ]; then
-            echo "✅ Fichier output créé avec succès"
-          else
-            echo "⚠️ Fichier output non trouvé"
-          fi
-
-      - name: 💾 Upload du notebook exécuté (artifact)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: notebook-ingestion-output
-          path: |
-            00_qualite_eau_ingestion_output.ipynb
-            *.log
-          retention-days: 7
-
       - name: ✅ Résumé de l'exécution
         if: success()
         run: |
@@ -129,7 +106,6 @@ jobs:
           echo "📊 Résumé :"
           echo "   ✅ Notebook exécuté : 00_qualite_eau_ingestion.ipynb"
           echo "   ✅ Output disponible : 00_qualite_eau_ingestion_output.ipynb"
-          echo "   ✅ Artifacts uploadés : notebook-ingestion-output"
           echo ""
           echo "🎉 Étape 1 du pipeline complétée !"
           echo "================================"
@@ -157,6 +133,26 @@ jobs:
 
           echo "✅ Variables d'environnement configurées"
 
+      - name: 🔍 Vérification des fichiers ZIP dans le conteneur RAW
+        run: |
+          echo "================================"
+          echo "🔍 VÉRIFICATION DES FICHIERS ZIP DANS RAW"
+          echo "================================"
+
+          # Utiliser l'API Azure pour vérifier les fichiers ZIP
+          response=$(curl -s -X GET \
+            -H "Authorization: Bearer ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
+            "https://${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}.blob.core.windows.net/${{ secrets.CONTAINER_RAW }}?restype=container&comp=list" \
+            | grep -E 'qualite_eau_(2021|2022|2023|2024|2025)_20251030_[0-9]+\.zip')
+
+          if [[ ! -z "$response" ]]; then
+            echo "✅ Les fichiers ZIP sont déjà présents dans le conteneur RAW."
+            echo "   Passer directement à l'étape 2."
+          else
+            echo "❌ Les fichiers ZIP ne sont pas présents dans le conteneur RAW."
+            exit 1
+          fi
+
       - name: 🚀 Exécution du notebook de transformation RAW → BRONZE
         run: |
           echo "================================"
@@ -170,7 +166,7 @@ jobs:
             "${{ secrets.DATABRICKS_HOST }}/api/2.0/jobs/runs/submit" \
             -d '{
               "run_name": "Transformation RAW → BRONZE",
-              "existing_cluster_id": "YOUR_CLUSTER_ID",  # Remplacez par l'ID de votre cluster
+              "existing_cluster_id": "${{ secrets.DATABRICKS_CLUSTER_ID }}",
               "notebook_task": {
                 "notebook_path": "/raw_to_bronze_result_and_plv",
                 "base_parameters": {}
