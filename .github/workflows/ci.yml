@@ -1,0 +1,441 @@
+name: Pipeline Qualité Eau - CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # Permet de lancer manuellement
+
+env:
+  PYTHON_VERSION: '3.10'
+  DATABRICKS_HOST: https://adb-<workspace-id>.<region>.azuredatabricks.net  # À MODIFIER
+  CLUSTER_NAME: "Jonathan IMPE's Cluster credential"
+
+jobs:
+  # ============================================================
+  # JOB 1 : INGESTION LOCALE (GitHub Actions)
+  # ============================================================
+  ingestion-local:
+    name: "📥 Étape 1 - Ingestion Locale"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configuration Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📚 Installation des dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install papermill nbformat nbconvert
+
+      - name: 🔐 Configuration des variables d'environnement
+        run: |
+          echo "AZURE_STORAGE_ACCOUNT_NAME=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" >> $GITHUB_ENV
+          echo "AZURE_STORAGE_ACCOUNT_KEY=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" >> $GITHUB_ENV
+          echo "AZURE_STORAGE_CONNECTION_STRING=${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" >> $GITHUB_ENV
+          echo "CONTAINER_RAW=${{ secrets.CONTAINER_RAW }}" >> $GITHUB_ENV
+
+      - name: 🚀 Exécution du notebook d'ingestion
+        run: |
+          echo "================================"
+          echo "📥 ÉTAPE 1 : INGESTION DES DONNÉES"
+          echo "================================"
+          
+          papermill \
+            00_qualite_eau_ingestion.ipynb \
+            00_qualite_eau_ingestion_output.ipynb \
+            -p storage_account_name "${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" \
+            -p storage_account_key "${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
+            -p container_raw "${{ secrets.CONTAINER_RAW }}" \
+            --log-output \
+            --progress-bar
+          
+          echo "✅ Ingestion terminée avec succès"
+
+      - name: 📊 Vérification des résultats
+        if: success()
+        run: |
+          echo "✅ Notebook exécuté : 00_qualite_eau_ingestion.ipynb"
+          echo "📄 Output : 00_qualite_eau_ingestion_output.ipynb"
+
+      - name: 💾 Upload du notebook exécuté (artifact)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notebook-ingestion-output
+          path: 00_qualite_eau_ingestion_output.ipynb
+          retention-days: 7
+
+      - name: ❌ Gestion des erreurs
+        if: failure()
+        run: |
+          echo "❌ ERREUR lors de l'ingestion"
+          echo "📄 Consultez les logs ci-dessus"
+          exit 1
+
+  # ============================================================
+  # JOB 2 : TRANSFORMATION RAW TO BRONZE (Databricks)
+  # ============================================================
+  raw-to-bronze:
+    name: "🥉 Étape 2 - Raw to Bronze"
+    runs-on: ubuntu-latest
+    needs: ingestion-local
+    
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configuration Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📚 Installation Databricks CLI
+        run: |
+          pip install databricks-cli requests
+
+      - name: 🔐 Configuration Databricks CLI
+        run: |
+          echo "[DEFAULT]" > ~/.databrickscfg
+          echo "host = ${{ env.DATABRICKS_HOST }}" >> ~/.databrickscfg
+          echo "token = ${{ secrets.TOKEN_AZUREDATABRICKS }}" >> ~/.databrickscfg
+          
+          echo "✅ Configuration Databricks CLI effectuée"
+
+      - name: 🔍 Récupération de l'ID du cluster
+        id: get-cluster
+        run: |
+          echo "🔍 Recherche du cluster : ${{ env.CLUSTER_NAME }}"
+          
+          CLUSTER_ID=$(databricks clusters list --output JSON | \
+            python3 -c "import sys, json; clusters = json.load(sys.stdin)['clusters']; print(next((c['cluster_id'] for c in clusters if c['cluster_name'] == '${{ env.CLUSTER_NAME }}'), None))")
+          
+          if [ -z "$CLUSTER_ID" ] || [ "$CLUSTER_ID" == "None" ]; then
+            echo "❌ Cluster non trouvé : ${{ env.CLUSTER_NAME }}"
+            exit 1
+          fi
+          
+          echo "✅ Cluster trouvé : $CLUSTER_ID"
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_OUTPUT
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_ENV
+
+      - name: ▶️  Démarrage du cluster (si arrêté)
+        run: |
+          echo "🔄 Vérification de l'état du cluster..."
+          
+          STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} | \
+            python3 -c "import sys, json; print(json.load(sys.stdin)['state'])")
+          
+          echo "État actuel : $STATE"
+          
+          if [ "$STATE" == "TERMINATED" ]; then
+            echo "🚀 Démarrage du cluster..."
+            databricks clusters start --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }}
+            
+            # Attendre que le cluster soit prêt
+            while true; do
+              STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} | \
+                python3 -c "import sys, json; print(json.load(sys.stdin)['state'])")
+              
+              echo "État : $STATE"
+              
+              if [ "$STATE" == "RUNNING" ]; then
+                echo "✅ Cluster démarré"
+                break
+              elif [ "$STATE" == "ERROR" ]; then
+                echo "❌ Erreur de démarrage du cluster"
+                exit 1
+              fi
+              
+              sleep 30
+            done
+          else
+            echo "✅ Cluster déjà actif"
+          fi
+
+      - name: 📤 Upload du notebook vers Databricks
+        run: |
+          echo "📤 Upload de raw_to_bronze_result_and_plv.ipynb"
+          
+          databricks workspace import \
+            raw_to_bronze_result_and_plv.ipynb \
+            /Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/raw_to_bronze_result_and_plv \
+            --language PYTHON \
+            --format JUPYTER \
+            --overwrite
+          
+          echo "✅ Notebook uploadé"
+
+      - name: 🚀 Exécution du notebook sur Databricks
+        id: run-notebook-bronze
+        run: |
+          echo "================================"
+          echo "🥉 ÉTAPE 2 : RAW TO BRONZE"
+          echo "================================"
+          
+          # Créer un job run
+          RUN_ID=$(databricks runs submit --json '{
+            "run_name": "Pipeline - Raw to Bronze",
+            "existing_cluster_id": "${{ steps.get-cluster.outputs.CLUSTER_ID }}",
+            "notebook_task": {
+              "notebook_path": "/Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/raw_to_bronze_result_and_plv",
+              "base_parameters": {}
+            },
+            "timeout_seconds": 3600
+          }' | python3 -c "import sys, json; print(json.load(sys.stdin)['run_id'])")
+          
+          echo "✅ Job lancé : Run ID = $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_OUTPUT
+          
+          # Attendre la fin du job
+          echo "⏳ Attente de la fin du job..."
+          
+          while true; do
+            STATUS=$(databricks runs get --run-id $RUN_ID | \
+              python3 -c "import sys, json; print(json.load(sys.stdin)['state']['life_cycle_state'])")
+            
+            echo "Statut : $STATUS"
+            
+            if [ "$STATUS" == "TERMINATED" ]; then
+              RESULT=$(databricks runs get --run-id $RUN_ID | \
+                python3 -c "import sys, json; print(json.load(sys.stdin)['state']['result_state'])")
+              
+              if [ "$RESULT" == "SUCCESS" ]; then
+                echo "✅ Job terminé avec succès"
+                break
+              else
+                echo "❌ Job échoué : $RESULT"
+                exit 1
+              fi
+            elif [ "$STATUS" == "SKIPPED" ] || [ "$STATUS" == "INTERNAL_ERROR" ]; then
+              echo "❌ Erreur : $STATUS"
+              exit 1
+            fi
+            
+            sleep 20
+          done
+
+      - name: 📋 Récupération des logs
+        if: always()
+        run: |
+          echo "📋 Logs du job ${{ steps.run-notebook-bronze.outputs.RUN_ID }}"
+          databricks runs get-output --run-id ${{ steps.run-notebook-bronze.outputs.RUN_ID }} || true
+
+  # ============================================================
+  # JOB 3 : CRÉATION DES TABLES (Databricks)
+  # ============================================================
+  create-tables:
+    name: "📊 Étape 3 - Création Tables"
+    runs-on: ubuntu-latest
+    needs: raw-to-bronze
+    
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configuration Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📚 Installation Databricks CLI
+        run: |
+          pip install databricks-cli requests
+
+      - name: 🔐 Configuration Databricks CLI
+        run: |
+          echo "[DEFAULT]" > ~/.databrickscfg
+          echo "host = ${{ env.DATABRICKS_HOST }}" >> ~/.databrickscfg
+          echo "token = ${{ secrets.TOKEN_AZUREDATABRICKS }}" >> ~/.databrickscfg
+
+      - name: 🔍 Récupération de l'ID du cluster
+        id: get-cluster
+        run: |
+          CLUSTER_ID=$(databricks clusters list --output JSON | \
+            python3 -c "import sys, json; clusters = json.load(sys.stdin)['clusters']; print(next((c['cluster_id'] for c in clusters if c['cluster_name'] == '${{ env.CLUSTER_NAME }}'), None))")
+          
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_OUTPUT
+          echo "✅ Cluster : $CLUSTER_ID"
+
+      - name: 📤 Upload du notebook
+        run: |
+          echo "📤 Upload de read_create_table.ipynb"
+          
+          databricks workspace import \
+            read_create_table.ipynb \
+            /Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/read_create_table \
+            --language PYTHON \
+            --format JUPYTER \
+            --overwrite
+          
+          echo "✅ Notebook uploadé"
+
+      - name: 🚀 Exécution du notebook
+        id: run-notebook-tables
+        run: |
+          echo "================================"
+          echo "📊 ÉTAPE 3 : CRÉATION TABLES"
+          echo "================================"
+          
+          RUN_ID=$(databricks runs submit --json '{
+            "run_name": "Pipeline - Create Tables",
+            "existing_cluster_id": "${{ steps.get-cluster.outputs.CLUSTER_ID }}",
+            "notebook_task": {
+              "notebook_path": "/Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/read_create_table",
+              "base_parameters": {}
+            },
+            "timeout_seconds": 3600
+          }' | python3 -c "import sys, json; print(json.load(sys.stdin)['run_id'])")
+          
+          echo "✅ Job lancé : Run ID = $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_OUTPUT
+          
+          # Attendre la fin
+          while true; do
+            STATUS=$(databricks runs get --run-id $RUN_ID | \
+              python3 -c "import sys, json; print(json.load(sys.stdin)['state']['life_cycle_state'])")
+            
+            if [ "$STATUS" == "TERMINATED" ]; then
+              RESULT=$(databricks runs get --run-id $RUN_ID | \
+                python3 -c "import sys, json; print(json.load(sys.stdin)['state']['result_state'])")
+              
+              if [ "$RESULT" == "SUCCESS" ]; then
+                echo "✅ Tables créées avec succès"
+                break
+              else
+                echo "❌ Échec : $RESULT"
+                exit 1
+              fi
+            fi
+            sleep 20
+          done
+
+  # ============================================================
+  # JOB 4 : TRANSFORMATION SILVER (Databricks)
+  # ============================================================
+  silver-transformation:
+    name: "🥈 Étape 4 - Silver Transformation"
+    runs-on: ubuntu-latest
+    needs: create-tables
+    
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configuration Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📚 Installation Databricks CLI
+        run: |
+          pip install databricks-cli requests
+
+      - name: 🔐 Configuration Databricks CLI
+        run: |
+          echo "[DEFAULT]" > ~/.databrickscfg
+          echo "host = ${{ env.DATABRICKS_HOST }}" >> ~/.databrickscfg
+          echo "token = ${{ secrets.TOKEN_AZUREDATABRICKS }}" >> ~/.databrickscfg
+
+      - name: 🔍 Récupération de l'ID du cluster
+        id: get-cluster
+        run: |
+          CLUSTER_ID=$(databricks clusters list --output JSON | \
+            python3 -c "import sys, json; clusters = json.load(sys.stdin)['clusters']; print(next((c['cluster_id'] for c in clusters if c['cluster_name'] == '${{ env.CLUSTER_NAME }}'), None))")
+          
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_OUTPUT
+          echo "✅ Cluster : $CLUSTER_ID"
+
+      - name: 📤 Upload du notebook
+        run: |
+          echo "📤 Upload de 03_Silver_Transformation_azuredatabricks.ipynb"
+          
+          databricks workspace import \
+            03_Silver_Transformation_azuredatabricks.ipynb \
+            /Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/03_Silver_Transformation_azuredatabricks \
+            --language PYTHON \
+            --format JUPYTER \
+            --overwrite
+          
+          echo "✅ Notebook uploadé"
+
+      - name: 🚀 Exécution du notebook
+        id: run-notebook-silver
+        run: |
+          echo "================================"
+          echo "🥈 ÉTAPE 4 : SILVER TRANSFORMATION"
+          echo "================================"
+          
+          RUN_ID=$(databricks runs submit --json '{
+            "run_name": "Pipeline - Silver Transformation",
+            "existing_cluster_id": "${{ steps.get-cluster.outputs.CLUSTER_ID }}",
+            "notebook_task": {
+              "notebook_path": "/Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/03_Silver_Transformation_azuredatabricks",
+              "base_parameters": {}
+            },
+            "timeout_seconds": 3600
+          }' | python3 -c "import sys, json; print(json.load(sys.stdin)['run_id'])")
+          
+          echo "✅ Job lancé : Run ID = $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_OUTPUT
+          
+          # Attendre la fin
+          while true; do
+            STATUS=$(databricks runs get --run-id $RUN_ID | \
+              python3 -c "import sys, json; print(json.load(sys.stdin)['state']['life_cycle_state'])")
+            
+            if [ "$STATUS" == "TERMINATED" ]; then
+              RESULT=$(databricks runs get --run-id $RUN_ID | \
+                python3 -c "import sys, json; print(json.load(sys.stdin)['state']['result_state'])")
+              
+              if [ "$RESULT" == "SUCCESS" ]; then
+                echo "✅ Transformation Silver terminée avec succès"
+                break
+              else
+                echo "❌ Échec : $RESULT"
+                exit 1
+              fi
+            fi
+            sleep 20
+          done
+
+      - name: 📋 Récupération des logs
+        if: always()
+        run: |
+          databricks runs get-output --run-id ${{ steps.run-notebook-silver.outputs.RUN_ID }} || true
+
+  # ============================================================
+  # JOB 5 : RÉSUMÉ FINAL
+  # ============================================================
+  summary:
+    name: "📊 Résumé du Pipeline"
+    runs-on: ubuntu-latest
+    needs: [ingestion-local, raw-to-bronze, create-tables, silver-transformation]
+    if: always()
+    
+    steps:
+      - name: 📊 Résumé de l'exécution
+        run: |
+          echo "================================"
+          echo "📊 RÉSUMÉ DU PIPELINE"
+          echo "================================"
+          echo ""
+          echo "✅ Étape 1 : Ingestion locale"
+          echo "✅ Étape 2 : Raw to Bronze"
+          echo "✅ Étape 3 : Création des tables"
+          echo "✅ Étape 4 : Silver Transformation"
+          echo ""
+          echo "================================"
+          echo "🎉 PIPELINE TERMINÉ AVEC SUCCÈS"
+          echo "================================"
