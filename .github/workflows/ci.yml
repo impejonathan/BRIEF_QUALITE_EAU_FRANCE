@@ -262,7 +262,7 @@ jobs:
           echo "DATABRICKS_TOKEN: defined"
 
           # Remplace 836231694088498 par l'ID de ton job "ETL v1"
-          response=$(curl -X POST \
+          response=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ env.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
             "${{ env.DATABRICKS_HOST }}/api/2.1/jobs/run-now" \
@@ -273,13 +273,14 @@ jobs:
               }
             }')
 
-          echo "📋 Réponse de l'API Databricks :"
+          echo "Réponse complète de l'API Databricks :"
           echo "$response"
 
           # Vérifier si le lancement a réussi
           run_id=$(echo "$response" | jq -r '.run_id')
           if [ "$run_id" != "null" ]; then
             echo "✅ Pipeline 'ETL v1' lancé avec succès (Run ID: $run_id)"
+            echo "run_id=$run_id" >> $GITHUB_ENV
           else
             echo "❌ Échec du lancement du pipeline"
             exit 1
@@ -291,20 +292,39 @@ jobs:
           echo "🔄 VÉRIFICATION DU STATUT DU PIPELINE"
           echo "================================"
 
-          # Remplace $run_id par l'ID réel de ton run (à récupérer depuis la réponse précédente)
           sleep 30
-          status=$(curl -X GET \
+          response=$(curl -s -X GET \
             -H "Authorization: Bearer ${{ env.DATABRICKS_TOKEN }}" \
-            "${{ env.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=$run_id" | jq -r '.state.life_cycle_state')
+            "${{ env.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=${{ env.run_id }}")
+
+          echo "Réponse complète de l'API Databricks :"
+          echo "$response"
+
+          # Vérifier si la réponse contient un champ 'state'
+          state=$(echo "$response" | jq -r '.state')
+          if [ "$state" == "null" ]; then
+            echo "❌ La réponse de l'API ne contient pas de champ 'state'"
+            exit 1
+          fi
+
+          # Extraire le statut du pipeline
+          status=$(echo "$response" | jq -r '.state.life_cycle_state')
+          result_state=$(echo "$response" | jq -r '.state.result_state')
 
           echo "📋 Statut du pipeline : $status"
+          echo "📋 Résultat du pipeline : $result_state"
 
           if [ "$status" == "TERMINATED" ]; then
-            echo "✅ Pipeline 'ETL v1' terminé avec succès"
+            if [ "$result_state" == "SUCCESS" ]; then
+              echo "✅ Pipeline 'ETL v1' terminé avec succès"
+            else
+              echo "❌ Pipeline 'ETL v1' terminé avec échec (Result State: $result_state)"
+              exit 1
+            fi
           elif [ "$status" == "RUNNING" ]; then
             echo "ℹ️  Pipeline en cours d'exécution"
           else
-            echo "❌ Pipeline en échec ou statut inconnu"
+            echo "❌ Pipeline en échec ou statut inconnu (Statut: $status)"
             exit 1
           fi
 
