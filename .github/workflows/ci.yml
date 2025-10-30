@@ -164,7 +164,7 @@ jobs:
           echo "================================"
 
           # Utiliser l'API Databricks pour exécuter le notebook
-          response=$(curl -X POST \
+          response=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
             "${{ secrets.DATABRICKS_HOST }}/api/2.0/jobs/runs/submit" \
@@ -182,12 +182,12 @@ jobs:
               }
             }')
 
-          echo "Réponse de l'API Databricks : $response"
+          echo "Réponse de l'\''API Databricks :'" $response"
 
-          run_id=$(echo $response | jq -r '.run_id')
+          run_id=$(echo "$response" | jq -r '.run_id')
 
           if [ "$run_id" != "null" ]; then
-            echo "✅ Notebook lancé avec succès. ID d''exécution : $run_id"
+            echo "✅ Notebook lancé avec succès. ID d'\''exécution : $run_id"
           else
             echo "❌ Erreur lors du lancement du notebook"
             exit 1
