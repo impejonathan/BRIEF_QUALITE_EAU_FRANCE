@@ -7,10 +7,62 @@ env:
 
 jobs:
   # ============================================================
+  # JOB 0 : VÉRIFICATION DES FICHIERS ZIP (Azure Blob Storage)
+  # ============================================================
+  check-zip-files:
+    name: "🔍 Étape 0 - Vérification des fichiers ZIP"
+    runs-on: ubuntu-latest
+    outputs:
+      zip_files_present: ${{ steps.check-zip.outputs.zip_files_present }}
+
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Configuration des variables d'environnement
+        run: |
+          echo "AZURE_STORAGE_ACCOUNT_NAME=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" >> $GITHUB_ENV
+          echo "AZURE_STORAGE_ACCOUNT_KEY=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" >> $GITHUB_ENV
+          echo "CONTAINER_RAW=${{ secrets.CONTAINER_RAW }}" >> $GITHUB_ENV
+
+      - name: 🔍 Vérification des fichiers ZIP dans le conteneur RAW
+        id: check-zip
+        run: |
+          echo "================================"
+          echo "🔍 VÉRIFICATION DES FICHIERS ZIP DANS RAW"
+          echo "================================"
+
+          # Utiliser Azure CLI pour vérifier les fichiers ZIP
+          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+
+          # Lister les fichiers dans le conteneur RAW
+          files=$(az storage blob list --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }} --container-name ${{ secrets.CONTAINER_RAW }} --query "[?contains(name, 'qualite_eau_') && ends_with(name, '.zip')].name" -o tsv)
+
+          required_files=("qualite_eau_2025_20251030_124133.zip" "qualite_eau_2024_20251030_124155.zip" "qualite_eau_2023_20251030_124226.zip" "qualite_eau_2022_20251030_124258.zip" "qualite_eau_2021_20251030_124330.zip")
+
+          all_present=true
+          for file in "${required_files[@]}"; do
+            if [[ ! "$files" =~ "$file" ]]; then
+              all_present=false
+              break
+            fi
+          done
+
+          if $all_present; then
+            echo "✅ Tous les fichiers ZIP sont présents dans le conteneur RAW."
+            echo "zip_files_present=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Certains fichiers ZIP sont absents dans le conteneur RAW."
+            echo "zip_files_present=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ============================================================
   # JOB 1 : INGESTION LOCALE (GitHub Actions)
   # ============================================================
   ingestion-local:
     name: "📥 Étape 1 - Ingestion Locale"
+    needs: check-zip-files
+    if: needs.check-zip-files.outputs.zip_files_present == 'false'
     runs-on: ubuntu-latest
 
     steps:
@@ -42,7 +94,7 @@ jobs:
           echo "📓 Installation de papermill"
           pip install papermill nbformat nbconvert jupyter
 
-          pip install python-dotenv jq
+          pip install python-dotenv
 
           echo "✅ Toutes les dépendances sont installées"
           pip list | grep azure
@@ -115,7 +167,8 @@ jobs:
   # ============================================================
   transformation-raw-bronze:
     name: "🔄 Étape 2 - Transformation RAW → BRONZE"
-    needs: ingestion-local
+    needs: [check-zip-files, ingestion-local]
+    if: needs.check-zip-files.outputs.zip_files_present == 'true' || success()
     runs-on: ubuntu-latest
 
     steps:
@@ -132,26 +185,6 @@ jobs:
           echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}" >> $GITHUB_ENV
 
           echo "✅ Variables d'environnement configurées"
-
-      - name: 🔍 Vérification des fichiers ZIP dans le conteneur RAW
-        run: |
-          echo "================================"
-          echo "🔍 VÉRIFICATION DES FICHIERS ZIP DANS RAW"
-          echo "================================"
-
-          # Utiliser l'API Azure pour vérifier les fichiers ZIP
-          response=$(curl -s -X GET \
-            -H "Authorization: Bearer ${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
-            "https://${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}.blob.core.windows.net/${{ secrets.CONTAINER_RAW }}?restype=container&comp=list" \
-            | grep -E 'qualite_eau_(2021|2022|2023|2024|2025)_20251030_[0-9]+\.zip')
-
-          if [[ ! -z "$response" ]]; then
-            echo "✅ Les fichiers ZIP sont déjà présents dans le conteneur RAW."
-            echo "   Passer directement à l'étape 2."
-          else
-            echo "❌ Les fichiers ZIP ne sont pas présents dans le conteneur RAW."
-            exit 1
-          fi
 
       - name: 🚀 Exécution du notebook de transformation RAW → BRONZE
         run: |
@@ -173,12 +206,12 @@ jobs:
               }
             }')
 
-          echo "Réponse de l'\''API Databricks :'" $response
+          echo "Réponse de l'API Databricks : $response"
 
           run_id=$(echo "$response" | jq -r '.run_id')
 
           if [ "$run_id" != "null" ]; then
-            echo "✅ Notebook lancé avec succès. ID d'\''exécution : $run_id"
+            echo "✅ Notebook lancé avec succès. ID d'exécution : $run_id"
           else
             echo "❌ Erreur lors du lancement du notebook"
             exit 1
