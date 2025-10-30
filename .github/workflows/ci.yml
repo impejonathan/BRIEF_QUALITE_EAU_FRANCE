@@ -1,14 +1,15 @@
 name: Pipeline Qualité Eau - CI/CD
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch:  # Permet de lancer manuellement
+ workflow_dispatch : {}
+#   push:
+#     branches:
+#       - main
+#       - develop
+#   pull_request:
+#     branches:
+#       - main
+
 
 env:
   PYTHON_VERSION: '3.10'
