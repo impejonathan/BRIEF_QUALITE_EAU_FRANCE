@@ -4,7 +4,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}  # Assure-toi que cette variable contient "https://adb-34113004110412.12.azuredatabricks.net"
   DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
   DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
 
@@ -245,7 +245,7 @@ jobs:
   # ============================================================
   run-databricks-pipeline:
     name: "🚀 Étape 3 - Exécution du pipeline 'ETL v1' sur Databricks"
-    needs: check-raw-files  # Dépend uniquement de l'Étape 1
+    needs: check-raw-files
     if: needs.check-raw-files.outputs.has_zip == 'true' || (needs.check-raw-files.outputs.has_zip == 'false' && needs.ingestion-local.result == 'success')
     runs-on: ubuntu-latest
 
@@ -253,25 +253,19 @@ jobs:
       - name: 📦 Checkout du code
         uses: actions/checkout@v4
 
-      - name: 🔐 Configuration des variables d'environnement
-        run: |
-          echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}" >> $GITHUB_ENV
-          echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}" >> $GITHUB_ENV
-          echo "DATABRICKS_CLUSTER_ID=${{ secrets.DATABRICKS_CLUSTER_ID }}" >> $GITHUB_ENV
-
       - name: 🚀 Lancement du pipeline "ETL v1" sur Databricks
         run: |
           echo "================================"
           echo "🚀 LANCEMENT DU PIPELINE 'ETL v1'"
           echo "================================"
 
-          # Remplace 123456789 par l'ID réel de ton job "ETL v1"
+          # Remplace 836231694088498 par l'ID de ton job "ETL v1"
           response=$(curl -X POST \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
             "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run_now" \
             -d '{
-              "job_id": 123456789,
+              "job_id": 836231694088498,
               "notebook_params": {
                 "notebook_path": "/raw_to_bronze_result_and_plv.ipynb"
               }
@@ -295,11 +289,11 @@ jobs:
           echo "🔄 VÉRIFICATION DU STATUT DU PIPELINE"
           echo "================================"
 
-          # Remplace 123456789 par l'ID réel de ton run
+          # Remplace $run_id par l'ID réel de ton run (à récupérer depuis la réponse précédente)
           sleep 30
           status=$(curl -X GET \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
-            "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=123456789" | jq -r '.state.life_cycle_state')
+            "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=$run_id" | jq -r '.state.life_cycle_state')
 
           echo "📋 Statut du pipeline : $status"
 
