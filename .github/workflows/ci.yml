@@ -170,19 +170,14 @@ jobs:
             "${{ secrets.DATABRICKS_HOST }}/api/2.0/jobs/runs/submit" \
             -d '{
               "run_name": "Transformation RAW → BRONZE",
-              "new_cluster": {
-                "cluster_name": "Jonathan IMPE'\''s Cluster credential",
-                "spark_version": "10.4.x-scala2.12",
-                "node_type_id": "Standard_DS3_v2",
-                "num_workers": 2
-              },
+              "existing_cluster_id": "YOUR_CLUSTER_ID",  # Remplacez par l'ID de votre cluster
               "notebook_task": {
                 "notebook_path": "/raw_to_bronze_result_and_plv",
                 "base_parameters": {}
               }
             }')
 
-          echo "Réponse de l'\''API Databricks :'" $response"
+          echo "Réponse de l'\''API Databricks :'" $response
 
           run_id=$(echo "$response" | jq -r '.run_id')
 
