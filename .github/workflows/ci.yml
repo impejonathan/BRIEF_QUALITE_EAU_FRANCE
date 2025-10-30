@@ -4,9 +4,8 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}  # Assure-toi que cette variable contient "https://adb-34113004110412.12.azuredatabricks.net"
-  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-  DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+  DATABRICKS_HOST: "https://${{ secrets.DATABRICKS_HOST }}"  # Ajout de "https://"
+  DATABRICKS_TOKEN: ${{ secrets.TOKEN_AZUREDATABRICKS }}
 
 jobs:
   # ============================================================
@@ -259,11 +258,14 @@ jobs:
           echo "🚀 LANCEMENT DU PIPELINE 'ETL v1'"
           echo "================================"
 
+          echo "DATABRICKS_HOST: ${{ env.DATABRICKS_HOST }}"
+          echo "DATABRICKS_TOKEN: ${TOKEN_AZUREDATABRICKS:+defined}"
+
           # Remplace 836231694088498 par l'ID de ton job "ETL v1"
           response=$(curl -X POST \
-            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+            -H "Authorization: Bearer ${{ env.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
-            "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run_now" \
+            "${{ env.DATABRICKS_HOST }}/api/2.1/jobs/run_now" \
             -d '{
               "job_id": 836231694088498,
               "notebook_params": {
@@ -292,8 +294,8 @@ jobs:
           # Remplace $run_id par l'ID réel de ton run (à récupérer depuis la réponse précédente)
           sleep 30
           status=$(curl -X GET \
-            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
-            "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=$run_id" | jq -r '.state.life_cycle_state')
+            -H "Authorization: Bearer ${{ env.DATABRICKS_TOKEN }}" \
+            "${{ env.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=$run_id" | jq -r '.state.life_cycle_state')
 
           echo "📋 Statut du pipeline : $status"
 
