@@ -12,6 +12,8 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
+  DATABRICKS_HOST: 'https://adb-<workspace-id>.<region>.azuredatabricks.net'  # ⚠️ À MODIFIER avec votre URL
+  CLUSTER_NAME: "Jonathan IMPE's Cluster credential"
 
 jobs:
   # ============================================================
@@ -222,3 +224,341 @@ jobs:
           echo ""
           echo "🎉 Étape 1 du pipeline complétée !"
           echo "================================"
+
+  # ============================================================
+  # JOB 2 : TRANSFORMATION RAW TO BRONZE (Databricks)
+  # ============================================================
+  raw-to-bronze:
+    name: "🥉 Étape 2 - Raw to Bronze (Databricks)"
+    runs-on: ubuntu-latest
+    needs: ingestion-local
+    
+    steps:
+      - name: 📦 Checkout du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configuration Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📚 Installation Databricks CLI
+        run: |
+          echo "================================"
+          echo "📚 INSTALLATION DATABRICKS CLI"
+          echo "================================"
+          
+          pip install databricks-cli requests
+          
+          echo "✅ Databricks CLI installé"
+          databricks --version
+
+      - name: 🔐 Configuration Databricks
+        run: |
+          echo "================================"
+          echo "🔐 CONFIGURATION DATABRICKS"
+          echo "================================"
+          
+          # Créer le fichier de configuration
+          mkdir -p ~/.databricks
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = ${{ env.DATABRICKS_HOST }}
+          token = ${{ secrets.TOKEN_AZUREDATABRICKS }}
+          EOF
+          
+          echo "✅ Configuration Databricks effectuée"
+          echo "🌐 Host: ${{ env.DATABRICKS_HOST }}"
+          
+          # Tester la connexion
+          echo ""
+          echo "🧪 Test de connexion..."
+          databricks clusters list > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "✅ Connexion à Databricks réussie"
+          else
+            echo "❌ Échec de connexion à Databricks"
+            exit 1
+          fi
+
+      - name: 🔍 Recherche du cluster
+        id: get-cluster
+        run: |
+          echo "================================"
+          echo "🔍 RECHERCHE DU CLUSTER"
+          echo "================================"
+          
+          echo "🔍 Recherche du cluster : ${{ env.CLUSTER_NAME }}"
+          
+          # Récupérer l'ID du cluster
+          CLUSTER_ID=$(databricks clusters list --output JSON 2>/dev/null | \
+            python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              clusters = data.get('clusters', [])
+              target = '${{ env.CLUSTER_NAME }}'
+              for c in clusters:
+                  if c.get('cluster_name') == target:
+                      print(c['cluster_id'])
+                      sys.exit(0)
+              print('NOT_FOUND')
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              print('ERROR')
+          ")
+          
+          echo "Résultat de la recherche : $CLUSTER_ID"
+          
+          if [ "$CLUSTER_ID" == "NOT_FOUND" ] || [ "$CLUSTER_ID" == "ERROR" ] || [ -z "$CLUSTER_ID" ]; then
+            echo "❌ Cluster non trouvé : ${{ env.CLUSTER_NAME }}"
+            echo ""
+            echo "📋 Clusters disponibles :"
+            databricks clusters list
+            exit 1
+          fi
+          
+          echo "✅ Cluster trouvé : $CLUSTER_ID"
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_OUTPUT
+          echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_ENV
+
+      - name: 🔄 Vérification et démarrage du cluster
+        run: |
+          echo "================================"
+          echo "🔄 GESTION DU CLUSTER"
+          echo "================================"
+          
+          echo "🔍 Vérification de l'état du cluster ${{ steps.get-cluster.outputs.CLUSTER_ID }}..."
+          
+          # Récupérer l'état du cluster
+          STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
+            python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null || echo "UNKNOWN")
+          
+          echo "📊 État actuel du cluster : $STATE"
+          
+          if [ "$STATE" == "TERMINATED" ] || [ "$STATE" == "TERMINATING" ]; then
+            echo "🚀 Démarrage du cluster en cours..."
+            databricks clusters start --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }}
+            
+            echo "⏳ Attente du démarrage du cluster..."
+            TIMEOUT=600  # 10 minutes
+            ELAPSED=0
+            
+            while [ $ELAPSED -lt $TIMEOUT ]; do
+              sleep 15
+              ELAPSED=$((ELAPSED + 15))
+              
+              STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
+                python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null || echo "UNKNOWN")
+              
+              echo "⏱️  [$ELAPSED s] État : $STATE"
+              
+              if [ "$STATE" == "RUNNING" ]; then
+                echo "✅ Cluster démarré et prêt"
+                break
+              elif [ "$STATE" == "ERROR" ]; then
+                echo "❌ Erreur lors du démarrage du cluster"
+                exit 1
+              fi
+            done
+            
+            if [ $ELAPSED -ge $TIMEOUT ]; then
+              echo "❌ Timeout : le cluster n'a pas démarré dans les temps"
+              exit 1
+            fi
+            
+          elif [ "$STATE" == "RUNNING" ]; then
+            echo "✅ Cluster déjà en cours d'exécution"
+          elif [ "$STATE" == "PENDING" ] || [ "$STATE" == "RESTARTING" ]; then
+            echo "⏳ Cluster en cours de démarrage, attente..."
+            sleep 30
+            
+            STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
+              python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null)
+            
+            if [ "$STATE" == "RUNNING" ]; then
+              echo "✅ Cluster prêt"
+            else
+              echo "⚠️  Cluster toujours en démarrage (état: $STATE)"
+            fi
+          else
+            echo "⚠️  État du cluster inconnu ou problématique : $STATE"
+          fi
+
+      - name: 📤 Upload du notebook vers Databricks
+        run: |
+          echo "================================"
+          echo "📤 UPLOAD DU NOTEBOOK"
+          echo "================================"
+          
+          NOTEBOOK_PATH="/Workspace/Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/raw_to_bronze_result_and_plv"
+          
+          echo "📄 Notebook local : raw_to_bronze_result_and_plv.ipynb"
+          echo "📍 Destination : $NOTEBOOK_PATH"
+          
+          # Vérifier que le notebook existe
+          if [ ! -f "raw_to_bronze_result_and_plv.ipynb" ]; then
+            echo "❌ Le fichier raw_to_bronze_result_and_plv.ipynb n'existe pas"
+            exit 1
+          fi
+          
+          # Upload du notebook
+          databricks workspace import \
+            raw_to_bronze_result_and_plv.ipynb \
+            "$NOTEBOOK_PATH" \
+            --language PYTHON \
+            --format JUPYTER \
+            --overwrite
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Notebook uploadé avec succès"
+          else
+            echo "❌ Échec de l'upload du notebook"
+            exit 1
+          fi
+
+      - name: 🚀 Exécution du notebook sur Databricks
+        id: run-notebook
+        run: |
+          echo "================================"
+          echo "🚀 EXÉCUTION DU NOTEBOOK"
+          echo "================================"
+          
+          NOTEBOOK_PATH="/Workspace/Users/${{ secrets.DATABRICKS_USER_EMAIL }}/pipeline/raw_to_bronze_result_and_plv"
+          
+          echo "📓 Notebook : $NOTEBOOK_PATH"
+          echo "🖥️  Cluster : ${{ steps.get-cluster.outputs.CLUSTER_ID }}"
+          
+          # Créer et lancer le job
+          RUN_OUTPUT=$(databricks runs submit --json '{
+            "run_name": "Pipeline CI/CD - Raw to Bronze",
+            "existing_cluster_id": "${{ steps.get-cluster.outputs.CLUSTER_ID }}",
+            "notebook_task": {
+              "notebook_path": "'"$NOTEBOOK_PATH"'",
+              "base_parameters": {}
+            },
+            "timeout_seconds": 3600,
+            "libraries": []
+          }' 2>&1)
+          
+          echo "📋 Réponse de l'API :"
+          echo "$RUN_OUTPUT"
+          
+          # Extraire le run_id
+          RUN_ID=$(echo "$RUN_OUTPUT" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('run_id', ''))" 2>/dev/null)
+          
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ Impossible de récupérer le run_id"
+            echo "$RUN_OUTPUT"
+            exit 1
+          fi
+          
+          echo "✅ Job lancé avec succès"
+          echo "🆔 Run ID : $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          
+          # Afficher le lien vers le job
+          echo "🔗 Lien : ${{ env.DATABRICKS_HOST }}/#job/runs/$RUN_ID"
+
+      - name: ⏳ Attente de la fin du job
+        run: |
+          echo "================================"
+          echo "⏳ SUIVI DE L'EXÉCUTION"
+          echo "================================"
+          
+          RUN_ID="${{ steps.run-notebook.outputs.RUN_ID }}"
+          echo "🆔 Suivi du run : $RUN_ID"
+          echo ""
+          
+          TIMEOUT=1800  # 30 minutes
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            sleep 20
+            ELAPSED=$((ELAPSED + 20))
+            
+            # Récupérer l'état du job
+            JOB_INFO=$(databricks runs get --run-id $RUN_ID 2>/dev/null)
+            
+            LIFE_CYCLE_STATE=$(echo "$JOB_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin)['state']['life_cycle_state'])" 2>/dev/null || echo "UNKNOWN")
+            
+            echo "⏱️  [$ELAPSED s] État : $LIFE_CYCLE_STATE"
+            
+            if [ "$LIFE_CYCLE_STATE" == "TERMINATED" ]; then
+              RESULT_STATE=$(echo "$JOB_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin)['state']['result_state'])" 2>/dev/null)
+              
+              echo ""
+              echo "🏁 Job terminé"
+              echo "📊 Résultat : $RESULT_STATE"
+              
+              if [ "$RESULT_STATE" == "SUCCESS" ]; then
+                echo "✅ Job exécuté avec succès"
+                exit 0
+              else
+                echo "❌ Job échoué : $RESULT_STATE"
+                
+                # Afficher le message d'erreur
+                STATE_MESSAGE=$(echo "$JOB_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin)['state'].get('state_message', 'Aucun message'))" 2>/dev/null)
+                echo "📄 Message : $STATE_MESSAGE"
+                
+                exit 1
+              fi
+            elif [ "$LIFE_CYCLE_STATE" == "SKIPPED" ] || [ "$LIFE_CYCLE_STATE" == "INTERNAL_ERROR" ]; then
+              echo "❌ Erreur : $LIFE_CYCLE_STATE"
+              exit 1
+            fi
+          done
+          
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "❌ Timeout : le job n'a pas terminé dans les temps"
+            exit 1
+          fi
+
+      - name: 📋 Récupération des logs
+        if: always()
+        run: |
+          echo "================================"
+          echo "📋 LOGS DU JOB"
+          echo "================================"
+          
+          RUN_ID="${{ steps.run-notebook.outputs.RUN_ID }}"
+          
+          if [ ! -z "$RUN_ID" ]; then
+            echo "🆔 Run ID : $RUN_ID"
+            databricks runs get-output --run-id $RUN_ID 2>&1 || echo "⚠️  Impossible de récupérer les logs"
+          else
+            echo "⚠️  Aucun run_id disponible"
+          fi
+
+      - name: ✅ Résumé de l'étape 2
+        if: success()
+        run: |
+          echo ""
+          echo "================================"
+          echo "✅ RAW TO BRONZE TERMINÉ"
+          echo "================================"
+          echo ""
+          echo "📊 Résumé :"
+          echo "   ✅ Notebook exécuté : raw_to_bronze_result_and_plv.ipynb"
+          echo "   ✅ Cluster : ${{ env.CLUSTER_NAME }}"
+          echo "   ✅ Run ID : ${{ steps.run-notebook.outputs.RUN_ID }}"
+          echo ""
+          echo "🎉 Étape 2 du pipeline complétée !"
+          echo "================================"
+
+      - name: ❌ Gestion des erreurs
+        if: failure()
+        run: |
+          echo ""
+          echo "================================"
+          echo "❌ ERREUR ÉTAPE 2 : RAW TO BRONZE"
+          echo "================================"
+          echo ""
+          echo "💡 Vérifiez :"
+          echo "   - Le cluster est accessible"
+          echo "   - Le token Databricks est valide"
+          echo "   - Le notebook existe et est valide"
+          echo "   - Les logs ci-dessus pour plus de détails"
+          echo ""
+          exit 1
