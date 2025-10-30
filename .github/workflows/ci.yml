@@ -4,7 +4,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  DATABRICKS_HOST: "https://${{ secrets.DATABRICKS_HOST }}"  # Assurez-vous que DATABRICKS_HOST est défini comme "adb-34113004110412.12.azuredatabricks.net"
+  DATABRICKS_HOST: "https://${{ secrets.DATABRICKS_HOST }}"  # Ajout de "https://"
   DATABRICKS_TOKEN: ${{ secrets.TOKEN_AZUREDATABRICKS }}
 
 jobs:
