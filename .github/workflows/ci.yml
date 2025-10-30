@@ -15,9 +15,8 @@ jobs:
   check-raw-files:
     name: "🔍 Étape 1 - Analyse du conteneur 'raw'"
     runs-on: ubuntu-latest
-
     outputs:
-      has_files: ${{ steps.check-raw.outputs.has_files }}
+      has_zip: ${{ steps.check-raw.outputs.has_zip }}
 
     steps:
       - name: 📦 Checkout du code
@@ -46,7 +45,7 @@ jobs:
           echo "🔍 ANALYSE DU CONTENEUR 'RAW'"
           echo "================================"
 
-          python3 << EOF
+          python3 << 'EOF'
           from azure.storage.blob import BlobServiceClient
           import os
 
@@ -68,15 +67,15 @@ jobs:
 
           if not blobs:
               print("❌ Aucun fichier trouvé dans le conteneur 'raw'")
-              exit(0)
+              print("::set-output name=has_zip::false")
           else:
               has_zip = any(blob.name.endswith('.zip') for blob in blobs)
               if has_zip:
                   print("✅ Fichiers .zip trouvés dans 'raw' → Passage direct à l'étape 3")
-                  exit(1)  # Indique qu'il y a des fichiers .zip
+                  print("::set-output name=has_zip::true")
               else:
                   print("ℹ️  Fichiers trouvés, mais pas de .zip → Exécution de l'ingestion locale")
-                  exit(0)
+                  print("::set-output name=has_zip::false")
           EOF
 
   # ============================================================
@@ -85,7 +84,7 @@ jobs:
   ingestion-local:
     name: "📥 Étape 2 - Ingestion Locale"
     needs: check-raw-files
-    if: needs.check-raw-files.outputs.has_files == 'false'
+    if: needs.check-raw-files.outputs.has_zip == 'false'
     runs-on: ubuntu-latest
 
     steps:
@@ -246,10 +245,10 @@ jobs:
   # ============================================================
   run-databricks-pipeline:
     name: "🚀 Étape 3 - Exécution du pipeline 'ETL v1' sur Databricks"
-    needs: check-raw-files
+    needs: [check-raw-files, ingestion-local]
     if: |
-      needs.check-raw-files.result == 'success' ||
-      needs.check-raw-files.outputs.has_files == 'true'
+      needs.check-raw-files.outputs.has_zip == 'true' ||
+      (needs.check-raw-files.outputs.has_zip == 'false' && needs.ingestion-local.result == 'success')
     runs-on: ubuntu-latest
 
     steps:
