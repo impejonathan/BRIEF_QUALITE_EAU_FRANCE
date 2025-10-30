@@ -12,7 +12,9 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  DATABRICKS_HOST: 'https://adb-<workspace-id>.<region>.azuredatabricks.net'  # ⚠️ À MODIFIER avec votre URL
+  # ⚠️ IMPORTANT : Remplacez cette URL par votre vraie URL Databricks
+  # Exemple : https://adb-1234567890123456.12.azuredatabricks.net
+  DATABRICKS_HOST: 'https://adb-8445911392469812.12.azuredatabricks.net'  # ⚠️ MODIFIEZ ICI
   CLUSTER_NAME: "Jonathan IMPE's Cluster credential"
 
 jobs:
@@ -253,31 +255,112 @@ jobs:
           echo "✅ Databricks CLI installé"
           databricks --version
 
+      - name: 🔍 Vérification des prérequis
+        run: |
+          echo "================================"
+          echo "🔍 VÉRIFICATION DES PRÉREQUIS"
+          echo "================================"
+          
+          # Vérifier l'URL Databricks
+          if [[ "${{ env.DATABRICKS_HOST }}" == *"<workspace-id>"* ]] || [[ "${{ env.DATABRICKS_HOST }}" == *"<region>"* ]]; then
+            echo "❌ ERREUR : L'URL Databricks n'est pas configurée !"
+            echo "📝 Vous devez modifier la ligne 11 du fichier ci.yml"
+            echo "📝 Remplacez : https://adb-<workspace-id>.<region>.azuredatabricks.net"
+            echo "📝 Par votre vraie URL Databricks"
+            echo ""
+            echo "💡 Pour trouver votre URL :"
+            echo "   1. Allez sur le portail Azure"
+            echo "   2. Ouvrez votre workspace Databricks"
+            echo "   3. Copiez l'URL de votre workspace"
+            exit 1
+          fi
+          
+          # Vérifier le token
+          if [ -z "${{ secrets.TOKEN_AZUREDATABRICKS }}" ]; then
+            echo "❌ ERREUR : Le secret TOKEN_AZUREDATABRICKS n'est pas configuré !"
+            echo "📝 Ajoutez-le dans : Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          
+          # Vérifier l'email utilisateur
+          if [ -z "${{ secrets.DATABRICKS_USER_EMAIL }}" ]; then
+            echo "❌ ERREUR : Le secret DATABRICKS_USER_EMAIL n'est pas configuré !"
+            echo "📝 Ajoutez-le dans : Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          
+          echo "✅ URL Databricks : ${{ env.DATABRICKS_HOST }}"
+          echo "✅ Token configuré : Oui"
+          echo "✅ User email configuré : Oui"
+          echo "✅ Tous les prérequis sont satisfaits"
+
       - name: 🔐 Configuration Databricks
         run: |
           echo "================================"
           echo "🔐 CONFIGURATION DATABRICKS"
           echo "================================"
           
-          # Créer le fichier de configuration
+          # Créer le répertoire
           mkdir -p ~/.databricks
-          cat > ~/.databrickscfg << EOF
+          
+          # Créer le fichier de configuration
+          cat > ~/.databrickscfg << 'EOF'
           [DEFAULT]
           host = ${{ env.DATABRICKS_HOST }}
           token = ${{ secrets.TOKEN_AZUREDATABRICKS }}
           EOF
           
+          # Remplacer les variables
+          sed -i 's|\${{ env.DATABRICKS_HOST }}|${{ env.DATABRICKS_HOST }}|g' ~/.databrickscfg
+          sed -i 's|\${{ secrets.TOKEN_AZUREDATABRICKS }}|${{ secrets.TOKEN_AZUREDATABRICKS }}|g' ~/.databrickscfg
+          
           echo "✅ Configuration Databricks effectuée"
           echo "🌐 Host: ${{ env.DATABRICKS_HOST }}"
           
-          # Tester la connexion
-          echo ""
-          echo "🧪 Test de connexion..."
-          databricks clusters list > /dev/null 2>&1
-          if [ $? -eq 0 ]; then
+          # Vérifier que le fichier est bien créé
+          if [ -f ~/.databrickscfg ]; then
+            echo "✅ Fichier ~/.databrickscfg créé"
+            echo "📄 Contenu (masqué) :"
+            sed 's/token = .*/token = ***MASKED***/g' ~/.databrickscfg
+          else
+            echo "❌ Fichier de configuration non créé"
+            exit 1
+          fi
+
+      - name: 🧪 Test de connexion Databricks
+        run: |
+          echo "================================"
+          echo "🧪 TEST DE CONNEXION DATABRICKS"
+          echo "================================"
+          
+          echo "🔗 Tentative de connexion à : ${{ env.DATABRICKS_HOST }}"
+          
+          # Tester la connexion avec plus de détails
+          RESPONSE=$(databricks clusters list 2>&1)
+          EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -eq 0 ]; then
             echo "✅ Connexion à Databricks réussie"
+            echo ""
+            echo "📋 Clusters disponibles :"
+            echo "$RESPONSE"
           else
             echo "❌ Échec de connexion à Databricks"
+            echo ""
+            echo "📋 Message d'erreur :"
+            echo "$RESPONSE"
+            echo ""
+            echo "💡 Causes possibles :"
+            echo "   1. Token invalide ou expiré"
+            echo "   2. URL Databricks incorrecte"
+            echo "   3. Pas de permissions suffisantes"
+            echo "   4. Workspace Databricks inaccessible"
+            echo ""
+            echo "🔧 Solutions :"
+            echo "   1. Vérifiez votre token dans Azure Databricks :"
+            echo "      - User Settings > Access Tokens"
+            echo "   2. Vérifiez l'URL du workspace"
+            echo "   3. Vérifiez les permissions du token"
             exit 1
           fi
 
@@ -288,37 +371,60 @@ jobs:
           echo "🔍 RECHERCHE DU CLUSTER"
           echo "================================"
           
-          echo "🔍 Recherche du cluster : ${{ env.CLUSTER_NAME }}"
+          echo "🔍 Recherche du cluster : '${{ env.CLUSTER_NAME }}'"
           
-          # Récupérer l'ID du cluster
-          CLUSTER_ID=$(databricks clusters list --output JSON 2>/dev/null | \
-            python3 -c "
+          # Lister tous les clusters
+          CLUSTERS_JSON=$(databricks clusters list --output JSON 2>&1)
+          
+          echo "📋 Clusters trouvés :"
+          echo "$CLUSTERS_JSON" | python3 -c "
           import sys, json
           try:
               data = json.load(sys.stdin)
               clusters = data.get('clusters', [])
-              target = '${{ env.CLUSTER_NAME }}'
+              if not clusters:
+                  print('   ⚠️  Aucun cluster trouvé')
+              else:
+                  for c in clusters:
+                      print(f\"   - {c['cluster_name']} (ID: {c['cluster_id']}, État: {c['state']})\")
+          except Exception as e:
+              print(f'   ❌ Erreur lors du parsing : {e}')
+          " || echo "   ❌ Erreur lors de la lecture des clusters"
+          
+          # Récupérer l'ID du cluster
+          CLUSTER_ID=$(echo "$CLUSTERS_JSON" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              clusters = data.get('clusters', [])
+              target = '''${{ env.CLUSTER_NAME }}'''
               for c in clusters:
                   if c.get('cluster_name') == target:
                       print(c['cluster_id'])
                       sys.exit(0)
               print('NOT_FOUND')
           except Exception as e:
-              print(f'ERROR: {e}', file=sys.stderr)
               print('ERROR')
-          ")
+          " 2>/dev/null)
           
-          echo "Résultat de la recherche : $CLUSTER_ID"
+          echo ""
+          echo "🔎 Résultat de la recherche : $CLUSTER_ID"
           
           if [ "$CLUSTER_ID" == "NOT_FOUND" ] || [ "$CLUSTER_ID" == "ERROR" ] || [ -z "$CLUSTER_ID" ]; then
-            echo "❌ Cluster non trouvé : ${{ env.CLUSTER_NAME }}"
             echo ""
-            echo "📋 Clusters disponibles :"
-            databricks clusters list
+            echo "❌ Cluster non trouvé : '${{ env.CLUSTER_NAME }}'"
+            echo ""
+            echo "💡 Vérifiez :"
+            echo "   1. Le nom exact du cluster dans Databricks"
+            echo "   2. Les majuscules/minuscules (sensible à la casse)"
+            echo "   3. Les espaces et caractères spéciaux"
+            echo ""
+            echo "📝 Nom recherché : '${{ env.CLUSTER_NAME }}'"
             exit 1
           fi
           
-          echo "✅ Cluster trouvé : $CLUSTER_ID"
+          echo "✅ Cluster trouvé !"
+          echo "🆔 ID : $CLUSTER_ID"
           echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_OUTPUT
           echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_ENV
 
@@ -331,8 +437,8 @@ jobs:
           echo "🔍 Vérification de l'état du cluster ${{ steps.get-cluster.outputs.CLUSTER_ID }}..."
           
           # Récupérer l'état du cluster
-          STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
-            python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null || echo "UNKNOWN")
+          CLUSTER_INFO=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>&1)
+          STATE=$(echo "$CLUSTER_INFO" | python3 -c "import sys, json; print(json.load(sys.stdin).get('state', 'UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
           
           echo "📊 État actuel du cluster : $STATE"
           
@@ -349,7 +455,7 @@ jobs:
               ELAPSED=$((ELAPSED + 15))
               
               STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
-                python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null || echo "UNKNOWN")
+                python3 -c "import sys, json; print(json.load(sys.stdin).get('state', 'UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
               
               echo "⏱️  [$ELAPSED s] État : $STATE"
               
@@ -374,7 +480,7 @@ jobs:
             sleep 30
             
             STATE=$(databricks clusters get --cluster-id ${{ steps.get-cluster.outputs.CLUSTER_ID }} 2>/dev/null | \
-              python3 -c "import sys, json; print(json.load(sys.stdin)['state'])" 2>/dev/null)
+              python3 -c "import sys, json; print(json.load(sys.stdin).get('state', 'UNKNOWN'))" 2>/dev/null)
             
             if [ "$STATE" == "RUNNING" ]; then
               echo "✅ Cluster prêt"
@@ -399,21 +505,28 @@ jobs:
           # Vérifier que le notebook existe
           if [ ! -f "raw_to_bronze_result_and_plv.ipynb" ]; then
             echo "❌ Le fichier raw_to_bronze_result_and_plv.ipynb n'existe pas"
+            ls -la *.ipynb
             exit 1
           fi
           
+          echo "✅ Fichier trouvé localement"
+          
           # Upload du notebook
-          databricks workspace import \
+          UPLOAD_RESULT=$(databricks workspace import \
             raw_to_bronze_result_and_plv.ipynb \
             "$NOTEBOOK_PATH" \
             --language PYTHON \
             --format JUPYTER \
-            --overwrite
+            --overwrite 2>&1)
           
-          if [ $? -eq 0 ]; then
+          UPLOAD_EXIT=$?
+          
+          if [ $UPLOAD_EXIT -eq 0 ]; then
             echo "✅ Notebook uploadé avec succès"
           else
             echo "❌ Échec de l'upload du notebook"
+            echo "📋 Message d'erreur :"
+            echo "$UPLOAD_RESULT"
             exit 1
           fi
 
@@ -430,26 +543,31 @@ jobs:
           echo "🖥️  Cluster : ${{ steps.get-cluster.outputs.CLUSTER_ID }}"
           
           # Créer et lancer le job
-          RUN_OUTPUT=$(databricks runs submit --json '{
-            "run_name": "Pipeline CI/CD - Raw to Bronze",
-            "existing_cluster_id": "${{ steps.get-cluster.outputs.CLUSTER_ID }}",
-            "notebook_task": {
-              "notebook_path": "'"$NOTEBOOK_PATH"'",
-              "base_parameters": {}
+          RUN_OUTPUT=$(databricks runs submit --json "{
+            \"run_name\": \"Pipeline CI/CD - Raw to Bronze\",
+            \"existing_cluster_id\": \"${{ steps.get-cluster.outputs.CLUSTER_ID }}\",
+            \"notebook_task\": {
+              \"notebook_path\": \"$NOTEBOOK_PATH\",
+              \"base_parameters\": {}
             },
-            "timeout_seconds": 3600,
-            "libraries": []
-          }' 2>&1)
+            \"timeout_seconds\": 3600
+          }" 2>&1)
           
-          echo "📋 Réponse de l'API :"
+          RUN_EXIT=$?
+          
+          echo "📋 Réponse de l'API (code: $RUN_EXIT) :"
           echo "$RUN_OUTPUT"
+          
+          if [ $RUN_EXIT -ne 0 ]; then
+            echo "❌ Échec de la soumission du job"
+            exit 1
+          fi
           
           # Extraire le run_id
           RUN_ID=$(echo "$RUN_OUTPUT" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('run_id', ''))" 2>/dev/null)
           
           if [ -z "$RUN_ID" ]; then
             echo "❌ Impossible de récupérer le run_id"
-            echo "$RUN_OUTPUT"
             exit 1
           fi
           
@@ -556,8 +674,11 @@ jobs:
           echo "================================"
           echo ""
           echo "💡 Vérifiez :"
+          echo "   - L'URL Databricks (ligne 11 du ci.yml)"
+          echo "   - Le token Databricks (TOKEN_AZUREDATABRICKS)"
+          echo "   - L'email utilisateur (DATABRICKS_USER_EMAIL)"
+          echo "   - Le nom du cluster est exact"
           echo "   - Le cluster est accessible"
-          echo "   - Le token Databricks est valide"
           echo "   - Le notebook existe et est valide"
           echo "   - Les logs ci-dessus pour plus de détails"
           echo ""
