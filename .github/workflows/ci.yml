@@ -245,10 +245,8 @@ jobs:
   # ============================================================
   run-databricks-pipeline:
     name: "🚀 Étape 3 - Exécution du pipeline 'ETL v1' sur Databricks"
-    needs: [check-raw-files, ingestion-local]
-    if: |
-      needs.check-raw-files.outputs.has_zip == 'true' ||
-      (needs.check-raw-files.outputs.has_zip == 'false' && needs.ingestion-local.result == 'success')
+    needs: check-raw-files  # Dépend uniquement de l'Étape 1
+    if: needs.check-raw-files.outputs.has_zip == 'true' || (needs.check-raw-files.outputs.has_zip == 'false' && needs.ingestion-local.result == 'success')
     runs-on: ubuntu-latest
 
     steps:
