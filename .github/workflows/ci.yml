@@ -1,68 +1,26 @@
 name: Pipeline Qualité Eau - CI/CD
 on:
   workflow_dispatch: {}
+  # push:
+  #   branches:
+  #     - main
+  #     - develop
+  # pull_request:
+  #     branches:
+  #       - main
 
 env:
   PYTHON_VERSION: '3.10'
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
 
 jobs:
-  # ============================================================
-  # JOB 0 : VÉRIFICATION DES FICHIERS ZIP (Azure Blob Storage)
-  # ============================================================
-  check-zip-files:
-    name: "🔍 Étape 0 - Vérification des fichiers ZIP"
-    runs-on: ubuntu-latest
-    outputs:
-      zip_files_present: ${{ steps.check-zip.outputs.zip_files_present }}
-
-    steps:
-      - name: 📦 Checkout du code
-        uses: actions/checkout@v4
-
-      - name: 🔐 Configuration des variables d'environnement
-        run: |
-          echo "AZURE_STORAGE_ACCOUNT_NAME=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" >> $GITHUB_ENV
-          echo "AZURE_STORAGE_ACCOUNT_KEY=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" >> $GITHUB_ENV
-          echo "CONTAINER_RAW=${{ secrets.CONTAINER_RAW }}" >> $GITHUB_ENV
-
-      - name: 🔍 Vérification des fichiers ZIP dans le conteneur RAW
-        id: check-zip
-        run: |
-          echo "================================"
-          echo "🔍 VÉRIFICATION DES FICHIERS ZIP DANS RAW"
-          echo "================================"
-
-          # Utiliser Azure CLI pour vérifier les fichiers ZIP
-          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
-
-          # Lister les fichiers dans le conteneur RAW
-          files=$(az storage blob list --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }} --container-name ${{ secrets.CONTAINER_RAW }} --query "[?contains(name, 'qualite_eau_') && ends_with(name, '.zip')].name" -o tsv)
-
-          required_files=("qualite_eau_2025_20251030_124133.zip" "qualite_eau_2024_20251030_124155.zip" "qualite_eau_2023_20251030_124226.zip" "qualite_eau_2022_20251030_124258.zip" "qualite_eau_2021_20251030_124330.zip")
-
-          all_present=true
-          for file in "${required_files[@]}"; do
-            if [[ ! "$files" =~ "$file" ]]; then
-              all_present=false
-              break
-            fi
-          done
-
-          if $all_present; then
-            echo "✅ Tous les fichiers ZIP sont présents dans le conteneur RAW."
-            echo "zip_files_present=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Certains fichiers ZIP sont absents dans le conteneur RAW."
-            echo "zip_files_present=false" >> $GITHUB_OUTPUT
-          fi
-
   # ============================================================
   # JOB 1 : INGESTION LOCALE (GitHub Actions)
   # ============================================================
   ingestion-local:
     name: "📥 Étape 1 - Ingestion Locale"
-    needs: check-zip-files
-    if: needs.check-zip-files.outputs.zip_files_present == 'false'
     runs-on: ubuntu-latest
 
     steps:
@@ -88,7 +46,7 @@ jobs:
             pip install -r requirements.txt
           fi
 
-          echo "☁️ Installation des packages Azure"
+          echo "☁️  Installation des packages Azure"
           pip install azure-storage-blob azure-identity azure-core
 
           echo "📓 Installation de papermill"
@@ -126,6 +84,14 @@ jobs:
 
           echo "✅ Notebook trouvé : 00_qualite_eau_ingestion.ipynb"
 
+          python3 << EOF
+          import json
+          with open('00_qualite_eau_ingestion.ipynb', 'r', encoding='utf-8') as f:
+              nb = json.load(f)
+              print(f"📊 Nombre de cellules : {len(nb['cells'])}")
+              print(f"📊 Kernel : {nb['metadata'].get('kernelspec', {}).get('name', 'N/A')}")
+          EOF
+
       - name: 🚀 Exécution du notebook d'ingestion
         run: |
           echo "================================"
@@ -145,89 +111,234 @@ jobs:
             --progress-bar \
             --request-save-on-cell-execute
 
+          echo ""
           echo "✅ Ingestion terminée avec succès"
+
+      - name: 📊 Vérification des résultats
+        if: success()
+        run: |
+          echo "================================"
+          echo "📊 VÉRIFICATION DES RÉSULTATS"
+          echo "================================"
+
+          echo "✅ Notebook exécuté : 00_qualite_eau_ingestion.ipynb"
+          echo "📄 Output généré : 00_qualite_eau_ingestion_output.ipynb"
+
+          if [ -f "00_qualite_eau_ingestion_output.ipynb" ]; then
+            echo "✅ Fichier output créé avec succès"
+
+            python3 << EOF
+            import json
+            with open('00_qualite_eau_ingestion_output.ipynb', 'r', encoding='utf-8') as f:
+                nb = json.load(f)
+                cells_executed = sum(1 for cell in nb['cells'] if cell.get('execution_count'))
+                print(f"📊 Cellules exécutées : {cells_executed}/{len(nb['cells'])}")
+            EOF
+          else
+            echo "⚠️  Fichier output non trouvé"
+          fi
+
+      - name: 💾 Upload du notebook exécuté (artifact)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notebook-ingestion-output
+          path: |
+            00_qualite_eau_ingestion_output.ipynb
+            *.log
+          retention-days: 7
+
+      - name: ❌ Gestion des erreurs
+        if: failure()
+        run: |
+          echo "================================"
+          echo "❌ ERREUR LORS DE L'INGESTION"
+          echo "================================"
+
+          echo "📄 Consultez les logs ci-dessus pour plus de détails"
+          echo "💡 Vérifiez :"
+          echo "   - Les credentials Azure sont corrects"
+          echo "   - Le container existe"
+          echo "   - Les permissions sont configurées"
+          exit 1
 
       - name: ✅ Résumé de l'exécution
         if: success()
         run: |
-          echo ""
           echo "================================"
           echo "✅ INGESTION TERMINÉE AVEC SUCCÈS"
           echo "================================"
-          echo ""
+
           echo "📊 Résumé :"
           echo "   ✅ Notebook exécuté : 00_qualite_eau_ingestion.ipynb"
           echo "   ✅ Output disponible : 00_qualite_eau_ingestion_output.ipynb"
+          echo "   ✅ Artifacts uploadés : notebook-ingestion-output"
           echo ""
           echo "🎉 Étape 1 du pipeline complétée !"
-          echo "================================"
 
   # ============================================================
-  # JOB 2 : TRANSFORMATION RAW → BRONZE (Azure Databricks)
+  # JOB 2 : VÉRIFICATION DES FICHIERS DANS LE CONTENEUR "RAW"
   # ============================================================
-  transformation-raw-bronze:
-    name: "🔄 Étape 2 - Transformation RAW → BRONZE"
-    needs: [check-zip-files, ingestion-local]
-    if: needs.check-zip-files.outputs.zip_files_present == 'true' || success()
+  check-raw-files:
+    name: "🔍 Étape 0 - Vérification des fichiers dans 'raw'"
+    needs: ingestion-local
     runs-on: ubuntu-latest
 
     steps:
       - name: 📦 Checkout du code
         uses: actions/checkout@v4
 
+      - name: 🐍 Configuration Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: 📚 Installation des dépendances Azure
+        run: |
+          pip install azure-storage-blob
+
       - name: 🔐 Configuration des variables d'environnement
         run: |
-          echo "================================"
-          echo "🔐 CONFIGURATION DES SECRETS"
-          echo "================================"
+          echo "AZURE_STORAGE_ACCOUNT_NAME=${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }}" >> $GITHUB_ENV
+          echo "AZURE_STORAGE_ACCOUNT_KEY=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" >> $GITHUB_ENV
+          echo "CONTAINER_RAW=${{ secrets.CONTAINER_RAW }}" >> $GITHUB_ENV
 
-          echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}" >> $GITHUB_ENV
-          echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}" >> $GITHUB_ENV
-
-          echo "✅ Variables d'environnement configurées"
-
-      - name: 🚀 Exécution du notebook de transformation RAW → BRONZE
+      - name: 🔍 Vérification des fichiers dans le conteneur "raw"
+        id: check-raw
         run: |
           echo "================================"
-          echo "🔄 ÉTAPE 2 : TRANSFORMATION RAW → BRONZE"
+          echo "🔍 VÉRIFICATION DES FICHIERS DANS 'RAW'"
           echo "================================"
 
-          # Utiliser l'API Databricks pour exécuter le notebook
-          response=$(curl -s -X POST \
+          python3 << EOF
+          from azure.storage.blob import BlobServiceClient
+          import os
+
+          # Récupérer les variables d'environnement
+          storage_account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+          storage_account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+          container_name = os.environ.get("CONTAINER_RAW")
+
+          if not all([storage_account_name, storage_account_key, container_name]):
+              raise ValueError("❌ Les variables d'environnement ne sont pas configurées")
+
+          # Connexion au compte de stockage
+          connection_string = f"DefaultEndpointsProtocol=https;AccountName={storage_account_name};AccountKey={storage_account_key};EndpointSuffix=core.windows.net"
+          blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
+          # Lister les fichiers dans le conteneur "raw"
+          container_client = blob_service_client.get_container_client(container_name)
+          blobs = container_client.list_blobs()
+
+          file_count = 0
+          for blob in blobs:
+              file_count += 1
+              print(f"📄 Fichier trouvé : {blob.name}")
+
+          if file_count == 0:
+              print("❌ Aucun fichier trouvé dans le conteneur 'raw'")
+              exit(1)
+          else:
+              print(f"✅ {file_count} fichiers trouvés dans le conteneur 'raw'")
+              exit(0)
+          EOF
+
+#   # ============================================================
+#   # JOB 3 : EXÉCUTION DU PIPELINE "ETL v1" SUR DATABRICKS
+#   # ============================================================
+#   run-databricks-pipeline:
+#     name: "🚀 Étape 2 - Exécution du pipeline 'ETL v1' sur Databricks"
+#     needs: check-raw-files
+#     if: success()
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: 📦 Checkout du code
+#         uses: actions/checkout@v4
+
+#       - name: 🔐 Configuration des variables d'environnement
+#         run: |
+#           echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}" >> $GITHUB_ENV
+#           echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}" >> $GITHUB_ENV
+#           echo "DATABRICKS_CLUSTER_ID=${{ secrets.DATABRICKS_CLUSTER_ID }}" >> $GITHUB_ENV
+
+#       - name: 🚀 Lancement du pipeline "ETL v1" sur Databricks
+#         run: |
+#           echo "================================"
+#           echo "🚀 LANCEMENT DU PIPELINE 'ETL v1'"
+#           echo "================================"
+
+#           # Utilisation de l'API Databricks pour lancer le job
+#           response=$(curl -X POST \
+#             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+#             -H "Content-Type: application/json" \
+#             "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run_now" \
+#             -d '{
+#               "job_id": 123456789,  # Remplace par l'ID de ton job "ETL v1"
+#               "notebook_params": {
+#                 "notebook_path": "/raw_to_bronze_result_and_plv.ipynb"
+#               }
+#             }')
+
+#           echo "📋 Réponse de l'API Databricks :"
+#           echo "$response"
+
+#           # Vérifier si le lancement a réussi
+#           run_id=$(echo "$response" | jq -r '.run_id')
+#           if [ "$run_id" != "null" ]; then
+#             echo "✅ Pipeline 'ETL v1' lancé avec succès (Run ID: $run_id)"
+#           else
+#             echo "❌ Échec du lancement du pipeline"
+#             exit 1
+#           fi
+
+      - name: 🔄 Vérification du statut du pipeline
+        run: |
+          echo "================================"
+          echo "🔄 VÉRIFICATION DU STATUT DU PIPELINE"
+          echo "================================"
+
+          # Récupérer le statut du run
+          sleep 30  # Attendre 30 secondes pour que le job commence
+          status=$(curl -X GET \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "${{ secrets.DATABRICKS_HOST }}/api/2.0/jobs/runs/submit" \
-            -d '{
-              "run_name": "Transformation RAW → BRONZE",
-              "existing_cluster_id": "${{ secrets.DATABRICKS_CLUSTER_ID }}",
-              "notebook_task": {
-                "notebook_path": "/raw_to_bronze_result_and_plv",
-                "base_parameters": {}
-              }
-            }')
+            "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=123456789" | jq -r '.state.life_cycle_state')
 
-          echo "Réponse de l'API Databricks : $response"
+          echo "📋 Statut du pipeline : $status"
 
-          run_id=$(echo "$response" | jq -r '.run_id')
-
-          if [ "$run_id" != "null" ]; then
-            echo "✅ Notebook lancé avec succès. ID d'exécution : $run_id"
+          if [ "$status" == "TERMINATED" ]; then
+            echo "✅ Pipeline 'ETL v1' terminé avec succès"
+          elif [ "$status" == "RUNNING" ]; then
+            echo "ℹ️  Pipeline en cours d'exécution"
           else
-            echo "❌ Erreur lors du lancement du notebook"
+            echo "❌ Pipeline en échec ou statut inconnu"
             exit 1
           fi
 
-      - name: ✅ Résumé de l'exécution
-        if: success()
+      - name: ❌ Gestion des erreurs
+        if: failure()
         run: |
-          echo ""
           echo "================================"
-          echo "✅ TRANSFORMATION RAW → BRONZE TERMINÉE AVEC SUCCÈS"
+          echo "❌ ERREUR LORS DE L'EXÉCUTION DU PIPELINE"
           echo "================================"
-          echo ""
-          echo "📊 Résumé :"
-          echo "   ✅ Notebook exécuté : raw_to_bronze_result_and_plv.ipynb"
-          echo "   ✅ Exécution déclenchée sur Azure Databricks"
-          echo ""
-          echo "🎉 Étape 2 du pipeline complétée !"
-          echo "================================"
+
+          echo "📄 Consultez les logs ci-dessus pour plus de détails"
+          echo "💡 Vérifiez :"
+          echo "   - L'ID du job est correct"
+          echo "   - Le token Databricks est valide"
+          echo "   - Le cluster est disponible"
+          exit 1
+
+    #   - name: ✅ Résumé de l'exécution
+    #     if: success()
+    #     run: |
+    #       echo "================================"
+    #       echo "✅ PIPELINE 'ETL v1' TERMINÉ AVEC SUCCÈS"
+    #       echo "================================"
+
+    #       echo "📊 Résumé :"
+    #       echo "   ✅ Pipeline 'ETL v1' lancé sur Databricks"
+    #       echo "   ✅ Statut vérifié avec succès"
+    #       echo ""
+    #       echo "🎉 Étape 2 du pipeline complétée !"
